@@ -41,19 +41,27 @@ class dentriticNet(nn.Module):
        
         #Build forward pyramidal weights
         for i in range(self.ns):
-            wpf.append(nn.Linear(args.size_tab[i], args.size_tab[i + 1], bias = True))
+            if args.bias:
+                wpf.append(nn.Linear(args.size_tab[i], args.size_tab[i + 1]))
+            else:
+                wpf.append(nn.Linear(args.size_tab[i], args.size_tab[i + 1], bias = False))
+
+            torch.nn.init.uniform_(wpf[i].weight, a = -1, b = 1)
 
         #Build backward pyramidal weights
         for i in range(self.ns - 1):
             wpb.append(nn.Linear(args.size_tab[i + 2], args.size_tab[i + 1], bias = False))
+            torch.nn.init.uniform_(wpb[i].weight, a = -1, b = 1)
 
         #Build (forward) pyramidal to interneuron weights
         for i in range(self.ns - 1):
             wip.append(nn.Linear(args.size_tab[i + 1], args.size_tab[i + 2], bias = False))
+            torch.nn.init.uniform_(wip[i].weight, a = -1, b = 1)
 
         #Build (backward) pyramidal to interneuron weights
         for i in range(self.ns - 1):
-            wpi.append(nn.Linear(args.size_tab[i + 2], args.size_tab[i + 1], bias = False))        
+            wpi.append(nn.Linear(args.size_tab[i + 2], args.size_tab[i + 1], bias = False))
+            torch.nn.init.uniform_(wpi[i].weight, a = -1, b = 1)      
                                      
         self.wpf = wpf
         self.wpb = wpb
@@ -61,7 +69,32 @@ class dentriticNet(nn.Module):
         self.wpi = wpi
         
 
-    def stepper(self, data, s, i, nudge = False, track_va = False, **kwargs):
+    def initHist(self, tab, param = False):
+        hist = []
+        if not param:
+            for k in range(len(tab)):
+                hist_temp = tab[k].unsqueeze(2)
+                hist.append(hist_temp)
+                del hist_temp
+        else:
+            for k in range(len(tab)):
+                hist_temp = tab[k].weight.unsqueeze(2)
+                hist.append(hist_temp)
+                del hist_temp            
+
+        return hist
+
+    def updateHist(self, hist, tab, param = False):
+        if not param:
+            for k in range(len(tab)):                           
+                hist[k] = torch.cat((hist[k], tab[k].unsqueeze(2)), dim = 2)
+        else:
+            for k in range(len(tab)):                           
+                hist[k] = torch.cat((hist[k], tab[k].weight.unsqueeze(2)), dim = 2)            
+
+        return hist    
+
+    def stepper(self, data, s, i, track_va = False, **kwargs):
 
         dsdt = []
         #*****dynamics of the interneurons*****#
@@ -97,19 +130,20 @@ class dentriticNet(nn.Module):
                 #Compute total derivative (Eq. 1)
                 dsdt.append( -self.glk*s[k] + self.gb*(vb - s[k]) + self.ga*(va - s[k]) + self.noise*torch.randn_like(s[k]))
 
+                del va
+
             #b) for output neurons
             else:
-                va = torch.zeros_like(s[k])
 
                 #Compute total derivative (Eq. 1) *with ga = 0*:
                 dsdt.append( -self.glk*s[k] + self.gb*(vb - s[k]) + self.noise*torch.randn_like(s[k]))
 
                 #Nudging
-                if nudge and ('target' in kwargs):
+                if 'target' in kwargs:
                     dsdt[k] = dsdt[k] + self.gsom*(kwargs['target'] - s[k])
 
         
-            del va, vb
+            del vb
 
 
         #Compute derivative of the interneuron membrane potential
@@ -174,7 +208,7 @@ class dentriticNet(nn.Module):
        
         return s, i
 
-
+		
               
     def computeGradients(self, data, s, i):
         gradwpf = []
@@ -182,6 +216,7 @@ class dentriticNet(nn.Module):
         gradwpb = []
         gradwip = []
         gradwpi = []
+
         for k in range(self.ns):
             if k == 0:
                 vb = self.wpf[k](rho(data))
@@ -190,40 +225,75 @@ class dentriticNet(nn.Module):
             else:
                 vb =  self.wpf[k](rho(s[k - 1]))
                 vbhat = self.gb/(self.gb + self.glk + self.ga)*vb
-                gradwpf.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(s[k]) - rho(vbhat), 0, 1),rho(s[k - 1]))))
+                gradwpf.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(s[k]) - rho(vbhat), 0, 1), rho(s[k - 1]))))
 
             gradwpf_bias.append((1/self.batch_size)*(rho(s[k]) - rho(vbhat)).sum(0))
 
+	    del vb, vbhat
 
-        '''
-        gradw = []
-        gradw_bias = []
-        batch_size = s[0].size(0)
+	    for k in range(self.ns - 1):
+                vi = self.wip[k](rho(s[k]))
+                vihat = self.gd/(self.gd + self.glk)*vi
+	        gradwip.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(i[k + 1]) - rho(vihat), 0, 1), rho(s[k]))))
+                
+	        va = self.wpi[k](rho(i[k + 1])) + self.wpb[k](rho(s[k + 1]))
+                gradwpi.append((1/self.batch_size)*(torch.mm(torch.transpose(-va, 0, 1), rho(i[k + 1]))))
+
+	        vtdhat = self.wpb[k](rho(s[k + 1]))
+                gradwpb.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(s[k]) - rho(vtdhat), 0, 1), rho(s[k + 1]))))
+       
+                del vi, vihat, va, vtdhat
+
+        return gradwpf, gradwpf_bias, gradwpb, gradwpi, gradwip
              
-        for i in range(self.ns - 1):
-            gradw.append((1/(beta*batch_size))*(torch.mm(torch.transpose(rho(s[i]), 0, 1), rho(s[i + 1])) - torch.mm(torch.transpose(rho(seq[i]), 0, 1), rho(seq[i + 1])))) 
-            gradw.append(None)            
-            gradw_bias.append((1/(beta*batch_size))*(rho(s[i]) - rho(seq[i])).sum(0))
-            gradw_bias.append(None)                                                                                  
-                                                                
-        gradw.append((1/(beta*batch_size))*torch.mm(torch.transpose(rho(s[-1]) - rho(seq[-1]), 0, 1), rho(data)))
-        gradw_bias.append((1/(beta*batch_size))*(rho(s[-1]) - rho(seq[-1])).sum(0))
-               
-        return  gradw, gradw_bias
-        '''
 
-  
-    def updateWeights(self, beta, data, s, seq):
+    def updateWeights(self, data, s, i, selfpredict = False, freeze_feedback = False):
+
+        gradwpf, gradwpf_bias, gradwpb, gradwpi, gradwip = self.computeGradients(data, s, i)
+
+        if not selfpredict:
+            for k in range(len(self.wpf)):
+                self.wpf[k].weight += self.lr_pp[k]*self.dt*gradwpf[k] - (self.dt/self.tau_syn)*self.wpf[k].weight
+                if self.wpf[k].bias is not None:
+                    self.wpf[k].bias += self.lr_pp[k]*self.dt*gradwpf_bias[k] - (self.dt/self.tau_syn)*self.wpf[k].bias
+                if not freeze_feedback:
+                    for k in range(len(self.wpb)):
+                        self.wpb[k].weight += self.lr_pp[k]*self.dt*gradwpb[k] - (self.dt/self.tau_syn)*self.wpb[k].weight
+            
+        for k in range(len(self.wpb)):
+            self.wpi[k].weight += self.lr_pi[k]*self.dt*gradwpi[k] - (self.dt/self.tau_syn)*self.wpi[k].weight
+            self.wip[k].weight += self.lr_ip[k]*self.dt*gradwip[k] - (self.dt/self.tau_syn)*self.wip[k].weight
+
+
+class teacherNet(nn.Module):
+    def __init__(self, args):
+        super(teacherNet, self).__init__()
         
-        '''		
-        gradw, gradw_bias = self.computeGradients(beta, data, s, seq)
-        lr_tab = self.lr_tab
+        self.size_tab = args.size_tab_teacher
+
+        self.gamma = 0.1
+        self.beta = 1
+        self.theta = 3
+        self.k_tab = args.k_tab
+                    
+        w = nn.ModuleList([])
+
+        #Build weights
+        for i in range(len(args.size_tab_teacher) - 1):
+            w.append(nn.Linear(args.size_tab_teacher[i], args.size_tab_teacher[i + 1], bias = False))
+            torch.nn.init.uniform_(w[i].weight, a = -1, b = 1)
+               
+        self.w = w
+
+    def rho(self, x):
+        return self.gamma*torch.log(1 + torch.exp(self.beta*(x - self.theta)))
+
+    def forward(self, x):
+        a = x
         for i in range(len(self.w)):
-            if self.w[i] is not None:
-                self.w[i].weight += lr_tab[int(np.floor(i/2))]*gradw[i]
-            if gradw_bias[i] is not None:
-                self.w[i].bias += lr_tab[int(np.floor(i/2))]*gradw_bias[i]
-        '''
+            a = self.rho(self.k_tab[i]*self.w[i](a))
 
+        return a
 
+       
 

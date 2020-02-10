@@ -1,11 +1,10 @@
 import argparse
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
 import torch.optim as optim
 import pickle
 import datetime
 
 from netClasses import *
+from plotFunctions import *
 
 parser = argparse.ArgumentParser(description='Reproducing "Dentritic cortical microcircuits approximate the backpropagation algorithm"')
 parser.add_argument(
@@ -15,7 +14,7 @@ parser.add_argument(
     metavar='N',
     help='input batch size for training (default: 1)')
 parser.add_argument(
-    '--epochs',
+    '--samples',
     type=int,
     default=1,
     metavar='N',
@@ -117,13 +116,38 @@ parser.add_argument(
 parser.add_argument(
     '--device-label',
     type=int,
-    default=0,
+    default=-1,
     help='selects cuda device (default 0, -1 to select )')
 parser.add_argument(
     '--freeze-feedback',
     action='store_true',
     default=False, 
 help='freeze the dynamics of the feedback weights (default: False)')
+parser.add_argument(
+    '--bias',
+    action='store_true',
+    default=False, 
+help='use biases (default: False)')
+parser.add_argument(
+    '--size_tab_teacher',
+    nargs = '+',
+    type=float,
+    default=[30, 20, 10],
+    metavar='STT',
+    help='architecture of the teacher net (default: [30, 20, 10])')
+parser.add_argument(
+    '--k_tab',
+    nargs = '+',
+    type=float,
+    default=[2, 10],
+    metavar='STT',
+    help='architecture of the teacher net (default: [30, 20, 10])')
+parser.add_argument(
+    '--action',
+    type=str,
+    default='fig1',
+    metavar='ACT',
+    help='activation function (default: logexp)')  
 
 args = parser.parse_args()
 
@@ -153,50 +177,188 @@ if __name__ == '__main__':
     else:
         device = torch.device("cpu")
 
-    #Build the net
-    net = dentriticNet(args)
-    net.to(device)
-    net.train()
+    if args.action == 'fig1':
 
-    #Check net parameters dimensions
-    '''
-    print(net)
-    '''    
+        #Build the net
+        net = dentriticNet(args)
+        net.to(device)
+        net.train()
 
-    #Generate random input on the visible layer
-    data = torch.rand(args.batch_size, args.size_tab[0], device = device)
+        with torch.no_grad():
 
-    #Initialize hidden units
-    s, i = net.initHidden(device = device)
+            #Initialize neuron values
+            s, i = net.initHidden(device = device)
+                                  
+            #**************LEARN THE SELF-PREDICTING REGIME**************#
 
+            net.lr_ip = [0.0002375]
+            net.lr_pi = [0.0005]	   
+
+            for n in range(args.samples):
+                print('Learning self-prediction, sample {}'.format(1 + n))
+
+                #Pick a random sample
+                data = torch.rand(args.batch_size, args.size_tab[0], device = device)
+
+                if n == 0:
+                    data_trace = data.clone()
+                    data_trace_hist = data_trace.unsqueeze(2)
+
+                for t in range(args.T):
+                    #low-pass filter the data
+                    data_trace +=  (args.dt/args.tau_neu)*(- data_trace + data)
+                    data_trace_hist = torch.cat((data_trace_hist, data_trace.unsqueeze(2)), dim = 2)
+                    
+                    #Step the neural network
+                    s, i, va = net.stepper(data_trace, s, i, track_va = True)
+
+                    #Track apical potential, neurons and synapses
+                    va_topdown, va_cancellation = va
+                    if (t == 0) and (n == 0):
+                        #Initialize the tabs with initial values
+                        va_topdown_hist = net.initHist(va_topdown)
+                        va_cancellation_hist = net.initHist(va_cancellation)
+                        s_hist = net.initHist(s)
+                        wpf_hist = net.initHist(net.wpf, param = True)
+                        wpb_hist = net.initHist(net.wpb, param = True)
+                        wpi_hist = net.initHist(net.wpi, param = True)
+                        wip_hist= net.initHist(net.wip, param = True)
+                                               
+                    else:
+                        #Update the tabs with the current values
+                        va_topdown_hist = net.updateHist(va_topdown_hist, va_topdown)
+                        va_cancellation_hist = net.updateHist(va_cancellation_hist, va_cancellation)
+                        s_hist = net.updateHist(s_hist, s)
+                        wpf_hist = net.updateHist(wpf_hist, net.wpf, param = True)
+                        wpb_hist = net.updateHist(wpb_hist, net.wpb, param = True)
+                        wpi_hist = net.updateHist(wpi_hist, net.wpi, param = True)
+                        wip_hist = net.updateHist(wip_hist, net.wip, param = True)
+                    
+                    #Update the pyramidal-to-interneuron weights (NOT the pyramidal-to-pyramidal weights !)
+                    net.updateWeights(data, s, i, selfpredict = True)
+
+
+            #**************LEARN INPUT-TARGET ASSOCIATION**************#
+            
+            net.lr_ip = [0.0011875]
+            net.lr_pp = [0.0011875, 0.0005]            
+            data = torch.randn(args.batch_size, args.size_tab[0], device = device)
+            target = torch.randn(args.batch_size, args.size_tab[-1], device = device)
+
+            print('Learning input-target association ...')
+            for t in range(args.T):
+                print('t = {} ms'.format(0.1*t))
+                #low-pass filter the data
+                data_trace +=  (args.dt/args.tau_neu)*(- data_trace + data)
+                data_trace_hist = torch.cat((data_trace_hist, data_trace.unsqueeze(2)), dim = 2)
+                
+                #Step the neural network
+                s, i, va = net.stepper(data_trace, s, i, target = target, track_va = True)
+
+                #Track apical potential, neurons and synapses
+                va_topdown, va_cancellation = va
+                va_topdown_hist = net.updateHist(va_topdown_hist, va_topdown)
+                va_cancellation_hist = net.updateHist(va_cancellation_hist, va_cancellation)
+                s_hist = net.updateHist(s_hist, s)
+                wpf_hist = net.updateHist(wpf_hist, net.wpf, param = True)
+                wpb_hist = net.updateHist(wpb_hist, net.wpb, param = True)
+                wpi_hist = net.updateHist(wpi_hist, net.wpi, param = True)
+                wip_hist = net.updateHist(wip_hist, net.wip, param = True)
+
+                #Update the pyramidal-to-interneuron weights (INCLUDING the pyramidal-to-pyramidal weights !)
+                net.updateWeights(data, s, i, freeze_feedback = True)
+                        			
+                        
     
-    #Check hidden units dimensions
-    '''
-    for ind, s_temp in enumerate(s):
-        print('Layer {}: dimension {}'.format(ind, s_temp.size()))
-    for ind, i_temp in enumerate(i):
-        if i_temp is None:
-            print('Layer {}: None'.format(ind))
-        else:
-            print('Layer {}: dimension {}'.format(ind, i_temp.size()))
-    '''       
+            #Plot the apical potential neuron-wise
+            plot_results(args, data_trace = data_trace_hist, 
+                        va_topdown = va_topdown_hist, 
+                        va_cancellation = va_cancellation_hist)
+            
 
-    #Test stepper
-    '''
-    s, i = net.stepper(data, s, i)
-    '''
+            #Plot the neuron traces
+            plot_results(args, data_trace = data_trace_hist,
+                        s = s_hist)
+                        
+            #Plot the synapse traces
+            plot_results(args, wpf = wpf_hist, wpb = wpb_hist,
+                        wpi = wpi_hist, wip = wip_hist)
 
-    #Test weight update
-    with torch.no_grad():
-        net.updateWeights(data, s, i)
+            plt.show()
 
 
+    if args.action == 'fig2':
 
-    print('Everything is all right until here !')
-    
+            #Build the net
+            net = dentriticNet(args)
+            net.to(device)
+            net.train()
+            net.lr_ip = [0.0011875]
+            net.lr_pi = [0.0059375]
+            net.lr_pp = [0.0011875, 0.0005]
 
+            #Build the teacher net
+            teacherNet = teacherNet(args)
 
+            data = torch.rand(args.batch_size, args.size_tab[0], device = device)
 
+            y = teacherNet.forward(data)
 
+            with torch.no_grad():
 
+            #Initialize neuron values
+            s, i = net.initHidden(device = device)
+                                  
+            print('Learning non-linear function...')
+            for n in range(args.samples):
+                #Pick a random sample
+                data = torch.rand(args.batch_size, args.size_tab[0], device = device)
+
+                if n == 0:
+                    data_trace = data.clone()
+                    data_trace_hist = data_trace.unsqueeze(2)
+            
+                for t in range(args.T):
+                    #print('t = {} ms'.format(0.1*t))
+                    #low-pass filter the data
+                    data_trace +=  (args.dt/args.tau_neu)*(- data_trace + data)
+                    data_trace_hist = torch.cat((data_trace_hist, data_trace.unsqueeze(2)), dim = 2)
+                    
+                    #***********WATCHOUT************#
+                    target = teacherNet.forward(data)
+                    #*******************************#
+
+                    #Step the neural network
+                    s, i, va = net.stepper(data_trace, s, i, target = target, track_va = True)
+
+                    #Track apical potential, neurons and synapses
+                    va_topdown, va_cancellation = va
+                    va_topdown_hist = net.updateHist(va_topdown_hist, va_topdown)
+                    va_cancellation_hist = net.updateHist(va_cancellation_hist, va_cancellation)
+                    s_hist = net.updateHist(s_hist, s)
+                    wpf_hist = net.updateHist(wpf_hist, net.wpf, param = True)
+                    wpb_hist = net.updateHist(wpb_hist, net.wpb, param = True)
+                    wpi_hist = net.updateHist(wpi_hist, net.wpi, param = True)
+                    wip_hist = net.updateHist(wip_hist, net.wip, param = True)
+
+                    #Update the pyramidal-to-interneuron weights (INCLUDING the pyramidal-to-pyramidal weights !)
+                    net.updateWeights(data, s, i, freeze_feedback = True)
+                            			
+                            
+        
+                #Plot the apical potential neuron-wise
+                plot_results(args, data_trace = data_trace_hist, 
+                            va_topdown = va_topdown_hist, 
+                            va_cancellation = va_cancellation_hist)
+                
+
+                #Plot the neuron traces
+                plot_results(args, data_trace = data_trace_hist,
+                            s = s_hist)
+                            
+                #Plot the synapse traces
+                plot_results(args, wpf = wpf_hist, wpb = wpb_hist,
+                            wpi = wpi_hist, wip = wip_hist)
+
+                plt.show()
 
