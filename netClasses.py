@@ -46,22 +46,22 @@ class dentriticNet(nn.Module):
             else:
                 wpf.append(nn.Linear(args.size_tab[i], args.size_tab[i + 1], bias = False))
 
-            torch.nn.init.uniform_(wpf[i].weight, a = -1, b = 1)
+            torch.nn.init.uniform_(wpf[i].weight, a = -args.initw, b = args.initw)
 
         #Build backward pyramidal weights
         for i in range(self.ns - 1):
             wpb.append(nn.Linear(args.size_tab[i + 2], args.size_tab[i + 1], bias = False))
-            torch.nn.init.uniform_(wpb[i].weight, a = -1, b = 1)
+            torch.nn.init.uniform_(wpb[i].weight, a = -args.initw, b = args.initw)
 
         #Build (forward) pyramidal to interneuron weights
         for i in range(self.ns - 1):
             wip.append(nn.Linear(args.size_tab[i + 1], args.size_tab[i + 2], bias = False))
-            torch.nn.init.uniform_(wip[i].weight, a = -1, b = 1)
+            torch.nn.init.uniform_(wip[i].weight, a = -args.initw, b = args.initw)
 
         #Build (backward) pyramidal to interneuron weights
         for i in range(self.ns - 1):
             wpi.append(nn.Linear(args.size_tab[i + 2], args.size_tab[i + 1], bias = False))
-            torch.nn.init.uniform_(wpi[i].weight, a = -1, b = 1)      
+            torch.nn.init.uniform_(wpi[i].weight, a = -args.initw, b = args.initw)      
                                      
         self.wpf = wpf
         self.wpb = wpb
