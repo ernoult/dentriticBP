@@ -153,7 +153,12 @@ parser.add_argument(
     type=str,
     default='fig1',
     metavar='ACT',
-    help='activation function (default: logexp)')  
+    help='activation function (default: logexp)')
+parser.add_argument(
+    '--init-selfpred',
+    action='store_true',
+    default=False, 
+help='initialize weights properly for self-prediction (default: False)') 
 
 args = parser.parse_args()
 
@@ -196,10 +201,10 @@ if __name__ == '__main__':
             s, i = net.initHidden(device = device)
                                   
             #**************LEARN THE SELF-PREDICTING REGIME**************#
-
+            '''
             net.lr_ip = [0.0002375]
             net.lr_pi = [0.0005]	   
-
+	
             for n in range(args.samples):
                 print('Learning self-prediction, sample {}'.format(1 + n))
 
@@ -242,7 +247,7 @@ if __name__ == '__main__':
                     
                     #Update the pyramidal-to-interneuron weights (NOT the pyramidal-to-pyramidal weights !)
                     net.updateWeights(data, s, i, selfpredict = True)
-
+            '''
 
             #**************LEARN INPUT-TARGET ASSOCIATION**************#
             
@@ -251,9 +256,12 @@ if __name__ == '__main__':
             data = torch.rand(args.batch_size, args.size_tab[0], device = device)
             target = torch.rand(args.batch_size, args.size_tab[-1], device = device)
 
+            data_trace = data.clone()
+            data_trace_hist = data_trace.unsqueeze(2)
+
             print('Learning input-target association ...')
             for t in range(args.T):
-                print('t = {} ms'.format(0.1*t))
+                #print('t = {} ms'.format(0.1*t))
                 #low-pass filter the data
                 data_trace +=  (args.dt/args.tau_neu)*(- data_trace + data)
                 data_trace_hist = torch.cat((data_trace_hist, data_trace.unsqueeze(2)), dim = 2)
@@ -263,13 +271,23 @@ if __name__ == '__main__':
 
                 #Track apical potential, neurons and synapses
                 va_topdown, va_cancellation = va
-                va_topdown_hist = net.updateHist(va_topdown_hist, va_topdown)
-                va_cancellation_hist = net.updateHist(va_cancellation_hist, va_cancellation)
-                s_hist = net.updateHist(s_hist, s)
-                wpf_hist = net.updateHist(wpf_hist, net.wpf, param = True)
-                wpb_hist = net.updateHist(wpb_hist, net.wpb, param = True)
-                wpi_hist = net.updateHist(wpi_hist, net.wpi, param = True)
-                wip_hist = net.updateHist(wip_hist, net.wip, param = True)
+                if (t == 0):
+                    #Initialize the tabs with initial values
+                    va_topdown_hist = net.initHist(va_topdown)
+                    va_cancellation_hist = net.initHist(va_cancellation)
+                    s_hist = net.initHist(s)
+                    wpf_hist = net.initHist(net.wpf, param = True)
+                    wpb_hist = net.initHist(net.wpb, param = True)
+                    wpi_hist = net.initHist(net.wpi, param = True)
+                    wip_hist= net.initHist(net.wip, param = True)
+                else:
+                    va_topdown_hist = net.updateHist(va_topdown_hist, va_topdown)
+                    va_cancellation_hist = net.updateHist(va_cancellation_hist, va_cancellation)
+                    s_hist = net.updateHist(s_hist, s)
+                    wpf_hist = net.updateHist(wpf_hist, net.wpf, param = True)
+                    wpb_hist = net.updateHist(wpb_hist, net.wpb, param = True)
+                    wpi_hist = net.updateHist(wpi_hist, net.wpi, param = True)
+                    wip_hist = net.updateHist(wip_hist, net.wip, param = True)
 
                 #Update the pyramidal-to-interneuron weights (INCLUDING the pyramidal-to-pyramidal weights !)
                 net.updateWeights(data, s, i, freeze_feedback = True)

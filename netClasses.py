@@ -62,11 +62,23 @@ class dentriticNet(nn.Module):
         for i in range(self.ns - 1):
             wpi.append(nn.Linear(args.size_tab[i + 2], args.size_tab[i + 1], bias = False))
             torch.nn.init.uniform_(wpi[i].weight, a = -args.initw, b = args.initw)      
-                                     
+    
+
+        #****WATCH OUT: initialize weights for self-prediction****#
+        if args.init_selfpred:
+            for i in range(len(wpi)):
+                print('layer {}'.format(i))
+                wip[i].weight.data = (self.gb + self.glk)/(self.gb + self.glk + self.ga)*wpf[i + 1].weight.data.clone()
+                wpb[i].weight.data =  - wpi[i].weight.data.clone()
+        #*********************************************************#
+
+                                 
         self.wpf = wpf
         self.wpb = wpb
         self.wip = wip
         self.wpi = wpi
+
+
         
 
     def initHist(self, tab, param = False):
@@ -229,20 +241,20 @@ class dentriticNet(nn.Module):
 
             gradwpf_bias.append((1/self.batch_size)*(rho(s[k]) - rho(vbhat)).sum(0))
 
-	    del vb, vbhat
+        del vb, vbhat
 
-	    for k in range(self.ns - 1):
-                vi = self.wip[k](rho(s[k]))
-                vihat = self.gd/(self.gd + self.glk)*vi
-	        gradwip.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(i[k + 1]) - rho(vihat), 0, 1), rho(s[k]))))
-                
-	        va = self.wpi[k](rho(i[k + 1])) + self.wpb[k](rho(s[k + 1]))
-                gradwpi.append((1/self.batch_size)*(torch.mm(torch.transpose(-va, 0, 1), rho(i[k + 1]))))
+        for k in range(self.ns - 1):
+            vi = self.wip[k](rho(s[k]))
+            vihat = self.gd/(self.gd + self.glk)*vi
+            gradwip.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(i[k + 1]) - rho(vihat), 0, 1), rho(s[k]))))
 
-	        vtdhat = self.wpb[k](rho(s[k + 1]))
-                gradwpb.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(s[k]) - rho(vtdhat), 0, 1), rho(s[k + 1]))))
-       
-                del vi, vihat, va, vtdhat
+            va = self.wpi[k](rho(i[k + 1])) + self.wpb[k](rho(s[k + 1]))
+            gradwpi.append((1/self.batch_size)*(torch.mm(torch.transpose(-va, 0, 1), rho(i[k + 1]))))
+
+            vtdhat = self.wpb[k](rho(s[k + 1]))
+            gradwpb.append((1/self.batch_size)*(torch.mm(torch.transpose(rho(s[k]) - rho(vtdhat), 0, 1), rho(s[k + 1]))))
+
+            del vi, vihat, va, vtdhat
 
         return gradwpf, gradwpf_bias, gradwpb, gradwpi, gradwip
              

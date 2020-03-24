@@ -54,7 +54,7 @@ def plot_results(args, **kwargs):
                             plt.grid()
                         else:
                             plt.plot(0.1*np.linspace(0, va_topdown_hist[i - 1].size(2) - 1, va_topdown_hist[i - 1].size(2)), 
-                                    ((va_cancellation_hist[i - 1] + va_topdown_hist[i - 1])**2).sum(1).squeeze(0),
+                                    ((va_cancellation_hist[i - 1] + va_topdown_hist[i - 1])**2).cpu().numpy().sum(1).squeeze(0),
                                      color = 'grey', linewidth = 3, alpha = 0.5, label = 'Apical potential throughout time')
                             plt.xlabel('Time (ms)')
                             plt.title(' Apical pot of layer ' + str(i))
