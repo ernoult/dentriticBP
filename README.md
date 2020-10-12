@@ -2,6 +2,16 @@
 
 The following repository aims at reproducing the results of [this paper](https://arxiv.org/abs/1810.11393), Fig. 1 (random input target association) and Fig. 2 (non-linear regression task).
 
+## Package requirements
+
+Run the following command lines to set the environment using conda:
+```
+conda create --name EP python=3.6
+conda activate EP
+conda install -c conda-forge matplotlib
+conda install pytorch torchvision -c pytorch
+```
+
 ## Commands to be run
 
 These are examples of commands to be executed to reproduce:
